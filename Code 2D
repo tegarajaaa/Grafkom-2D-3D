@@ -1,0 +1,432 @@
+pip install PyOpenGL PyOpenGL_accelerate pywavefront
+!python3 /mnt/data/grafika_2d_clipping_app.py
+pip install pygame PyOpenGL PyOpenGL_accelerate numpy
+
+
+import pygame
+from pygame.locals import *
+from OpenGL.GL import *
+from OpenGL.GLU import *
+import numpy as np
+import math
+
+# --- Konfigurasi Awal ---
+SCREEN_WIDTH = 800
+SCREEN_HEIGHT = 600
+
+# --- Kelas untuk merepresentasikan setiap objek yang digambar ---
+class Shape:
+    def __init__(self, shape_type, points, color, thickness=1.0):
+        self.shape_type = shape_type  # 'point', 'line', 'rectangle', 'ellipse'
+        self.points = np.array(points, dtype=np.float32)
+        self.color = color
+        self.original_color = color
+        self.thickness = thickness
+        self.selected = False
+        
+        # Properti untuk transformasi
+        self.translation = np.array([0.0, 0.0])
+        self.rotation_angle = 0.0  # dalam derajat
+        self.scale_factor = np.array([1.0, 1.0])
+
+    def get_center(self):
+        """Mendapatkan titik pusat objek untuk rotasi dan scaling."""
+        return np.mean(self.points, axis=0)
+
+    def draw(self, clipping_window=None):
+        """Fungsi utama untuk menggambar objek dengan transformasi."""
+        glPushMatrix()
+
+        # Tentukan warna: jika di dalam window, hijau. Jika terpilih, cyan.
+        current_color = self.color
+        if self.selected:
+            current_color = (0.0, 1.0, 1.0) # Cyan untuk objek terpilih
+        
+        # Cek jika objek berada di dalam window clipping
+        is_inside, is_partial = self.check_clipping(clipping_window)
+        if is_inside and not is_partial and clipping_window:
+            current_color = (0.1, 0.8, 0.1) # Hijau terang jika sepenuhnya di dalam
+
+        glColor3f(*current_color)
+        glLineWidth(self.thickness)
+        glPointSize(self.thickness * 3) # Ukuran titik disesuaikan ketebalan
+
+        # 1. Translasi ke titik pusat
+        center = self.get_center()
+        glTranslatef(center[0], center[1], 0)
+        
+        # 2. Terapkan transformasi tambahan (translasi, rotasi, scaling)
+        glTranslatef(self.translation[0], self.translation[1], 0)
+        glRotatef(self.rotation_angle, 0, 0, 1)
+        glScalef(self.scale_factor[0], self.scale_factor[1], 1.0)
+        
+        # 3. Translasi kembali dari titik pusat
+        glTranslatef(-center[0], -center[1], 0)
+
+        # Menggambar objek berdasarkan tipenya
+        if self.shape_type == 'point':
+            self.draw_point()
+        elif self.shape_type == 'line':
+            self.draw_line(clipping_window)
+        elif self.shape_type == 'rectangle':
+            self.draw_rectangle()
+        elif self.shape_type == 'ellipse':
+            self.draw_ellipse()
+
+        glPopMatrix()
+
+    def draw_point(self):
+        glBegin(GL_POINTS)
+        glVertex2fv(self.points[0])
+        glEnd()
+
+    def draw_line(self, clipping_window):
+        p1 = self.points[0]
+        p2 = self.points[1]
+
+        # Jika ada window clipping, terapkan algoritma Cohen-Sutherland
+        if clipping_window:
+            clipped_line = cohen_sutherland_clip(p1[0], p1[1], p2[0], p2[1], clipping_window)
+            if clipped_line:
+                x1, y1, x2, y2 = clipped_line
+                glBegin(GL_LINES)
+                glVertex2f(x1, y1)
+                glVertex2f(x2, y2)
+                glEnd()
+        else:
+            glBegin(GL_LINES)
+            glVertex2fv(p1)
+            glVertex2fv(p2)
+            glEnd()
+
+    def draw_rectangle(self):
+        p1 = self.points[0]
+        p2 = self.points[1]
+        glBegin(GL_LINE_LOOP)
+        glVertex2f(p1[0], p1[1])
+        glVertex2f(p2[0], p1[1])
+        glVertex2f(p2[0], p2[1])
+        glVertex2f(p1[0], p2[1])
+        glEnd()
+
+    def draw_ellipse(self):
+        center = self.points[0]
+        radius_pt = self.points[1]
+        rx = abs(center[0] - radius_pt[0])
+        ry = abs(center[1] - radius_pt[1])
+        
+        glBegin(GL_LINE_LOOP)
+        for i in range(100):
+            angle = 2 * math.pi * i / 100
+            x = center[0] + rx * math.cos(angle)
+            y = center[1] + ry * math.sin(angle)
+            glVertex2f(x, y)
+        glEnd()
+
+    def is_clicked(self, pos):
+        """Mengecek apakah mouse diklik di dekat objek ini."""
+        # Sederhana: cek bounding box dengan sedikit toleransi
+        min_x, min_y = np.min(self.points, axis=0)
+        max_x, max_y = np.max(self.points, axis=0)
+        tolerance = 5 + self.thickness # toleransi klik
+        return (min_x - tolerance <= pos[0] <= max_x + tolerance and
+                min_y - tolerance <= pos[1] <= max_y + tolerance)
+
+    def check_clipping(self, window):
+        """Mengecek status objek terhadap clipping window."""
+        if not window:
+            return False, False
+
+        xmin, ymin, xmax, ymax = window
+        fully_inside = True
+        partially_inside = False
+
+        # Dapatkan vertex setelah transformasi
+        transformed_points = []
+        model_view = glGetDoublev(GL_MODELVIEW_MATRIX)
+        
+        for point in self.points:
+            # Ini adalah penyederhanaan. Transformasi aktual terjadi di GPU.
+            # Untuk deteksi akurat, kita harus menerapkan transformasi manual di sini.
+            # Untuk tugas ini, kita cek berdasarkan titik asli saja.
+            px, py = point
+            
+            if not (xmin <= px <= xmax and ymin <= py <= ymax):
+                fully_inside = False
+            if (xmin <= px <= xmax and ymin <= py <= ymax):
+                partially_inside = True
+        
+        # Jika tidak ada titik di dalam, bisa jadi objek melintasi window (misal garis)
+        if not partially_inside:
+            # Cek kasus garis melintasi window
+            if self.shape_type == 'line':
+                 if cohen_sutherland_clip(self.points[0][0], self.points[0][1], self.points[1][0], self.points[1][1], window):
+                     partially_inside = True
+
+        return fully_inside, partially_inside
+
+# --- Algoritma Clipping Cohen-Sutherland ---
+INSIDE, LEFT, RIGHT, BOTTOM, TOP = 0, 1, 2, 4, 8
+
+def compute_outcode(x, y, rect):
+    xmin, ymin, xmax, ymax = rect
+    code = INSIDE
+    if x < xmin: code |= LEFT
+    elif x > xmax: code |= RIGHT
+    if y < ymin: code |= BOTTOM
+    elif y > ymax: code |= TOP
+    return code
+
+def cohen_sutherland_clip(x1, y1, x2, y2, rect):
+    xmin, ymin, xmax, ymax = rect
+    outcode1 = compute_outcode(x1, y1, rect)
+    outcode2 = compute_outcode(x2, y2, rect)
+    
+    while True:
+        # Kasus 1: Trivial accept (kedua titik di dalam)
+        if not (outcode1 | outcode2):
+            return x1, y1, x2, y2
+        # Kasus 2: Trivial reject (kedua titik di luar sisi yang sama)
+        elif (outcode1 & outcode2):
+            return None
+        # Kasus 3: Clipping diperlukan
+        else:
+            x, y = 0, 0
+            # Pilih titik yang di luar
+            outcode_out = outcode1 if outcode1 else outcode2
+            
+            # Cari titik potong
+            if outcode_out & TOP:
+                x = x1 + (x2 - x1) * (ymax - y1) / (y2 - y1)
+                y = ymax
+            elif outcode_out & BOTTOM:
+                x = x1 + (x2 - x1) * (ymin - y1) / (y2 - y1)
+                y = ymin
+            elif outcode_out & RIGHT:
+                x = x1 + (x2 - x1) * (xmax - x1) / (y2 - y1) if (y2-y1) != 0 else x1
+                y = y1 + (y2 - y1) * (xmax - x1) / (x2 - x1) if (x2-x1) != 0 else y1
+            elif outcode_out & LEFT:
+                x = x1 + (x2 - x1) * (xmin - x1) / (y2 - y1) if (y2-y1) != 0 else x1
+                y = y1 + (y2 - y1) * (xmin - x1) / (x2 - x1) if (x2-x1) != 0 else y1
+            
+            # Pindahkan titik luar ke titik potong
+            if outcode_out == outcode1:
+                x1, y1 = x, y
+                outcode1 = compute_outcode(x1, y1, rect)
+            else:
+                x2, y2 = x, y
+                outcode2 = compute_outcode(x2, y2, rect)
+
+# --- Kelas Utama Aplikasi ---
+class App:
+    def __init__(self):
+        # --- PERBAIKAN DI SINI ---
+        # Memanggil init() dari pygame, bukan dari file ini sendiri.
+        pygame.init() 
+        
+        self.display = (SCREEN_WIDTH, SCREEN_HEIGHT)
+        pygame.display.set_mode(self.display, DOUBLEBUF | OPENGL)
+        pygame.display.set_caption("Tugas Besar Grafika Komputer - Modul 2D")
+        self.init_opengl()
+        
+        self.clock = pygame.time.Clock()
+        self.shapes = []
+        self.current_mode = 'draw_point' # Initial mode
+        self.current_color = (1.0, 1.0, 1.0) # Putih
+        self.current_thickness = 1.0
+        self.start_pos = None
+        self.selected_shape_index = None
+        
+        # Properti untuk window & clipping
+        self.clipping_window = None # Format: [xmin, ymin, xmax, ymax]
+        self.temp_window_start = None
+
+    def init_opengl(self):
+        """Inisialisasi viewport dan proyeksi OpenGL."""
+        glClearColor(0.1, 0.1, 0.2, 1.0) # Latar belakang biru gelap
+        glViewport(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT)
+        glMatrixMode(GL_PROJECTION)
+        glLoadIdentity()
+        gluOrtho2D(0, SCREEN_WIDTH, 0, SCREEN_HEIGHT)
+        glMatrixMode(GL_MODELVIEW)
+        glLoadIdentity()
+
+    def get_mouse_pos(self):
+        """Mendapatkan posisi mouse dan mengkonversi ke sistem koordinat OpenGL."""
+        mx, my = pygame.mouse.get_pos()
+        return mx, SCREEN_HEIGHT - my # Y dibalik
+
+    def handle_events(self):
+        """Menangani semua input dari user (keyboard, mouse)."""
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+            
+            # Penanganan input keyboard untuk mengubah mode
+            if event.type == pygame.KEYDOWN:
+                self.handle_key_press(event.key)
+
+            # Penanganan input mouse
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if event.button == 1: # Klik kiri
+                    self.handle_mouse_click()
+        
+        # Penanganan key press yang ditahan untuk transformasi
+        self.handle_held_keys()
+        
+        return True
+    
+    def handle_key_press(self, key):
+        # Mode
+        if key == pygame.K_p: self.set_mode('draw_point')
+        elif key == pygame.K_l: self.set_mode('draw_line')
+        elif key == pygame.K_r: self.set_mode('draw_rectangle')
+        elif key == pygame.K_e: self.set_mode('draw_ellipse')
+        elif key == pygame.K_m: self.set_mode('select')
+        elif key == pygame.K_w: self.set_mode('define_window')
+        elif key == pygame.K_c: 
+            self.clipping_window = None
+            self.temp_window_start = None
+            print("Clipping window dihapus.")
+
+        # Warna
+        elif key == pygame.K_1: self.current_color = (1.0, 0.0, 0.0); print("Warna: Merah")
+        elif key == pygame.K_2: self.current_color = (0.0, 1.0, 0.0); print("Warna: Hijau")
+        elif key == pygame.K_3: self.current_color = (0.0, 0.0, 1.0); print("Warna: Biru")
+        elif key == pygame.K_4: self.current_color = (1.0, 1.0, 0.0); print("Warna: Kuning")
+        elif key == pygame.K_5: self.current_color = (1.0, 1.0, 1.0); print("Warna: Putih")
+
+        # Ketebalan
+        elif key == pygame.K_EQUALS or key == pygame.K_PLUS:
+            self.current_thickness += 1.0
+            print(f"Ketebalan: {self.current_thickness}")
+        elif key == pygame.K_MINUS:
+            self.current_thickness = max(1.0, self.current_thickness - 1.0)
+            print(f"Ketebalan: {self.current_thickness}")
+            
+    def handle_held_keys(self):
+        """Menangani tombol yang ditahan untuk transformasi real-time."""
+        if self.selected_shape_index is not None:
+            shape = self.shapes[self.selected_shape_index]
+            keys = pygame.key.get_pressed()
+            
+            # Translasi
+            if keys[pygame.K_UP]: shape.translation[1] += 2
+            if keys[pygame.K_DOWN]: shape.translation[1] -= 2
+            if keys[pygame.K_LEFT]: shape.translation[0] -= 2
+            if keys[pygame.K_RIGHT]: shape.translation[0] += 2
+
+            # Rotasi (dengan Shift)
+            if keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]:
+                if keys[pygame.K_LEFT]: shape.rotation_angle += 2
+                if keys[pygame.K_RIGHT]: shape.rotation_angle -= 2
+            
+            # Scaling (dengan Ctrl)
+            if keys[pygame.K_LCTRL] or keys[pygame.K_RCTRL]:
+                if keys[pygame.K_UP]: shape.scale_factor *= 1.02
+                if keys[pygame.K_DOWN]: shape.scale_factor *= 0.98
+
+    def handle_mouse_click(self):
+        """Logika utama saat mouse diklik, berdasarkan mode saat ini."""
+        pos = self.get_mouse_pos()
+        
+        # --- Logika Menggambar ---
+        if self.current_mode == 'draw_point':
+            self.shapes.append(Shape('point', [pos], self.current_color, self.current_thickness))
+        elif self.current_mode in ['draw_line', 'draw_rectangle', 'draw_ellipse']:
+            if self.start_pos is None:
+                self.start_pos = pos
+            else:
+                shape_type = self.current_mode.replace('draw_', '')
+                self.shapes.append(Shape(shape_type, [self.start_pos, pos], self.current_color, self.current_thickness))
+                self.start_pos = None
+        
+        # --- Logika Seleksi ---
+        elif self.current_mode == 'select':
+            # Batalkan seleksi sebelumnya
+            if self.selected_shape_index is not None:
+                self.shapes[self.selected_shape_index].selected = False
+                self.selected_shape_index = None
+
+            # Cari objek yang diklik (dari yang terbaru)
+            for i in range(len(self.shapes) - 1, -1, -1):
+                if self.shapes[i].is_clicked(pos):
+                    self.shapes[i].selected = True
+                    self.selected_shape_index = i
+                    print(f"Objek #{i} ({self.shapes[i].shape_type}) terseleksi.")
+                    break
+        
+        # --- Logika Window Clipping ---
+        elif self.current_mode == 'define_window':
+            if self.temp_window_start is None:
+                self.temp_window_start = pos
+            else:
+                x_coords = sorted([self.temp_window_start[0], pos[0]])
+                y_coords = sorted([self.temp_window_start[1], pos[1]])
+                self.clipping_window = [x_coords[0], y_coords[0], x_coords[1], y_coords[1]]
+                self.temp_window_start = None
+                print(f"Window clipping diatur ke: {self.clipping_window}")
+
+    def set_mode(self, mode):
+        self.current_mode = mode
+        self.start_pos = None # Reset posisi awal saat ganti mode
+        # Batalkan seleksi saat keluar dari mode select
+        if mode != 'select' and self.selected_shape_index is not None:
+            self.shapes[self.selected_shape_index].selected = False
+            self.selected_shape_index = None
+        print(f"Mode aktif: {mode}")
+
+    def draw_scene(self):
+        """Menggambar semua elemen di layar."""
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        glLoadIdentity()
+        
+        # Gambar semua objek yang tersimpan
+        for shape in self.shapes:
+            shape.draw(self.clipping_window)
+
+        # Gambar "rubber band" saat menggambar objek baru
+        if self.start_pos:
+            glColor3f(0.5, 0.5, 0.5) # Warna abu-abu untuk preview
+            glBegin(GL_LINES)
+            glVertex2fv(self.start_pos)
+            glVertex2fv(self.get_mouse_pos())
+            glEnd()
+
+        
+            
+        # Gambar preview window saat sedang dibuat
+        if self.temp_window_start:
+             glColor3f(0.8, 0.7, 0.2)
+             glLineStipple(1, 0xAAAA) # Garis putus-putus
+             glEnable(GL_LINE_STIPPLE)
+             p1 = self.temp_window_start
+             p2 = self.get_mouse_pos()
+             glBegin(GL_LINE_LOOP)
+             glVertex2f(p1[0], p1[1])
+             glVertex2f(p2[0], p1[1])
+             glVertex2f(p2[0], p2[1])
+             glVertex2f(p1[0], p2[1])
+             glEnd()
+             glDisable(GL_LINE_STIPPLE)
+
+
+    def run(self):
+        """Loop utama aplikasi."""
+        running = True
+        while running:
+            running = self.handle_events()
+            
+            self.draw_scene()
+            
+            pygame.display.flip()
+            self.clock.tick(60)
+            
+        pygame.quit()
+        quit()
+
+if __name__ == '__main__':
+    app = App()
+    app.run()
+
+
