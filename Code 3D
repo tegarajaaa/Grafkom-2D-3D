@@ -1,0 +1,175 @@
+pip install PyOpenGL PyOpenGL_accelerate
+
+
+from OpenGL.GL import *
+from OpenGL.GLU import *
+from OpenGL.GLUT import *
+import sys
+import math
+import time
+
+# Rotasi dan translasi
+rotation = [0, 0]
+translation = [0, 0, -7]
+mouse_last_pos = [0, 0]
+is_mouse_dragging = False
+
+# Inisialisasi pencahayaan
+def init_lighting():
+    glEnable(GL_LIGHTING)
+    glEnable(GL_LIGHT0)
+
+    ambient = [0.2, 0.2, 0.2, 1.0]
+    diffuse = [0.7, 0.7, 0.7, 1.0]
+    specular = [1.0, 1.0, 1.0, 1.0]
+    light_position = [2.0, 2.0, 2.0, 1.0]
+
+    glLightfv(GL_LIGHT0, GL_AMBIENT, ambient)
+    glLightfv(GL_LIGHT0, GL_DIFFUSE, diffuse)
+    glLightfv(GL_LIGHT0, GL_SPECULAR, specular)
+    glLightfv(GL_LIGHT0, GL_POSITION, light_position)
+
+    glMaterialfv(GL_FRONT, GL_SPECULAR, specular)
+    glMateriali(GL_FRONT, GL_SHININESS, 50)
+
+# Fungsi untuk membuat background warna dinamis
+def update_background_color():
+    t = time.time()
+    r = (0.5 + 0.5 * math.sin(t * 0.5))
+    g = (0.5 + 0.5 * math.sin(t * 0.7 + 2))
+    b = (0.5 + 0.5 * math.sin(t * 0.9 + 4))
+    glClearColor(r, g, b, 1.0)
+
+# Gambar kubus manual dengan warna berbeda per sisi
+def draw_colored_cube():
+    vertices = [
+        [-1, -1, -1], [ 1, -1, -1], [ 1,  1, -1], [-1,  1, -1],  # 0-3
+        [-1, -1,  1], [ 1, -1,  1], [ 1,  1,  1], [-1,  1,  1],  # 4-7
+    ]
+
+    faces = [
+        [0, 1, 2, 3],  # Belakang
+        [4, 5, 6, 7],  # Depan
+        [0, 4, 7, 3],  # Kiri
+        [1, 5, 6, 2],  # Kanan
+        [3, 2, 6, 7],  # Atas
+        [0, 1, 5, 4],  # Bawah
+    ]
+
+    normals = [
+        [ 0,  0, -1],
+        [ 0,  0,  1],
+        [-1,  0,  0],
+        [ 1,  0,  0],
+        [ 0,  1,  0],
+        [ 0, -1,  0],
+    ]
+
+    # Warna berbeda tiap sisi (RGBA)
+    colors = [
+        [1.0, 0.0, 0.0, 1.0],  # Merah
+        [0.0, 1.0, 0.0, 1.0],  # Hijau
+        [0.0, 0.0, 1.0, 1.0],  # Biru
+        [1.0, 1.0, 0.0, 1.0],  # Kuning
+        [1.0, 0.0, 1.0, 1.0],  # Magenta
+        [0.0, 1.0, 1.0, 1.0],  # Cyan
+    ]
+
+    glBegin(GL_QUADS)
+    for i, face in enumerate(faces):
+        glNormal3fv(normals[i])
+        glMaterialfv(GL_FRONT, GL_AMBIENT_AND_DIFFUSE, colors[i])
+        for vertex in face:
+            glVertex3fv(vertices[vertex])
+    glEnd()
+
+# Tampilkan
+def display():
+    update_background_color()
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    glLoadIdentity()
+
+    # Kamera
+    gluLookAt(0, 0, 5, 0, 0, 0, 0, 1, 0)
+
+    glTranslatef(*translation)
+    glRotatef(rotation[0], 1, 0, 0)
+    glRotatef(rotation[1], 0, 1, 0)
+
+    draw_colored_cube()
+    glutSwapBuffers()
+
+# Atur layar
+def reshape(width, height):
+    if height == 0:
+        height = 1
+    aspect = width / float(height)
+    glViewport(0, 0, width, height)
+    glMatrixMode(GL_PROJECTION)
+    glLoadIdentity()
+    gluPerspective(45, aspect, 0.1, 100)
+    glMatrixMode(GL_MODELVIEW)
+
+# Keyboard kontrol translasi
+def keyboard(key, x, y):
+    global translation
+    key = key.decode('utf-8')
+    if key == 'w':
+        translation[1] += 0.1
+    elif key == 's':
+        translation[1] -= 0.1
+    elif key == 'a':
+        translation[0] -= 0.1
+    elif key == 'd':
+        translation[0] += 0.1
+    elif key == 'z':
+        translation[2] += 0.1
+    elif key == 'x':
+        translation[2] -= 0.1
+    elif key == 'r':
+        translation[:] = [0, 0, -7]
+        rotation[:] = [0, 0]
+    glutPostRedisplay()
+
+# Mouse drag rotasi
+def mouse_motion(x, y):
+    global rotation, mouse_last_pos
+    if is_mouse_dragging:
+        dx = x - mouse_last_pos[0]
+        dy = y - mouse_last_pos[1]
+        rotation[0] += dy * 0.5
+        rotation[1] += dx * 0.5
+        mouse_last_pos = [x, y]
+        glutPostRedisplay()
+
+# Mouse klik deteksi
+def mouse(button, state, x, y):
+    global is_mouse_dragging, mouse_last_pos
+    if button == GLUT_LEFT_BUTTON:
+        if state == GLUT_DOWN:
+            is_mouse_dragging = True
+            mouse_last_pos = [x, y]
+        elif state == GLUT_UP:
+            is_mouse_dragging = False
+
+# Setup awal
+def main():
+    glutInit(sys.argv)
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
+    glutInitWindowSize(800, 600)
+    glutCreateWindow(b"Kubus 3D dengan Background Warna-Warni")
+
+    glEnable(GL_DEPTH_TEST)
+    init_lighting()
+
+    glutDisplayFunc(display)
+    glutIdleFunc(display)  # Tambahkan idle untuk animasi terus-menerus
+    glutReshapeFunc(reshape)
+    glutKeyboardFunc(keyboard)
+    glutMouseFunc(mouse)
+    glutMotionFunc(mouse_motion)
+
+    glutMainLoop()
+
+if __name__ == "__main__":
+    main()
